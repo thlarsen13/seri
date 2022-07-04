@@ -96,6 +96,7 @@ def conv_to_matrix(in_layer_shape, conv_tensor,
                                                               in_layer_shape)
                                 conv_weight_matrix[in_int][out_int] = weight
 
+
     return conv_weight_matrix
 
 def cnn_layer_tup_to_int(tup, layer_shape):
@@ -142,7 +143,7 @@ def weights_to_graph(weights_array):
         block_mat.append(block_row)
 
     # add a final row to block_mat that's just a bunch of [None]s followed by a
-    # zero matrix of the right size
+    # zero matrix of the right size6^^^^^^^^^^
     m = weights_array[-1].shape[1]
     final_zeroes = sparse.coo_matrix((m, m))
     nones_row = [None]*len(weights_array)
