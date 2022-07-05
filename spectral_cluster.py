@@ -14,6 +14,8 @@ from joblib import Parallel, delayed
 import pickle
 import os 
 
+fast = False 
+
 def picklify(path, obj):
     with open(path, 'wb') as f:
         pickle.dump(obj, f)
@@ -28,12 +30,17 @@ def model_to_adj_matrix(model):
 
     weights = []
 
-    for layer in model.layers: 
-
+    for i, layer in enumerate(model.layers): 
+        print(layer.name)
+        max_pool_after = i+1 < len(model.layers) and 'pool' in model.layers[i+1].name
+        # print(f'here: {max_pool_after}')
+        # continue
         if layer.weights != []:
             if 'conv' in layer.name: 
                 path = f'pickles/{layer.name}_matrix'
-                w = conv_to_matrix(layer.input_shape[1:], layer.weights[0])
+                w = conv_to_matrix(layer.input_shape[1:], layer.weights[0], max_pool=max_pool_after)
+                if fast: 
+                    w = np.random.rand(w.shape[0], w.shape[1])
                 picklify(path, w)
             elif 'dense' in layer.name: 
                 w = layer.weights[0]
@@ -46,7 +53,7 @@ def model_to_adj_matrix(model):
 
 
 def conv_to_matrix(in_layer_shape, conv_tensor,
-                              max_weight_convention='all_one'):
+                              max_pool=False):
     '''
     TODO do max pool connection 
 
@@ -76,9 +83,11 @@ def conv_to_matrix(in_layer_shape, conv_tensor,
     out_layer_size = np.product(out_layer_shape)
 
     conv_weight_matrix = np.zeros((in_layer_size, out_layer_size))
+    print(f'successfully allocated array: {conv_weight_matrix.shape}')
 
     # THIS WORKS ONLY FOR SAME and not for VALID!!!
     for i in tqdm(range(in_height)):
+        if fast: break
         for j in range(in_width):
             for c_out in range(n_chan_out):
                 out_int = cnn_layer_tup_to_int((i,j,c_out), out_layer_shape)
@@ -95,9 +104,36 @@ def conv_to_matrix(in_layer_shape, conv_tensor,
                                                                c_in),
                                                               in_layer_shape)
                                 conv_weight_matrix[in_int][out_int] = weight
+    if not max_pool:
+        return conv_weight_matrix
 
+    else:
+        print('computing max pool...')
+        pool_height = 2
+        pool_width = 2
+        out_height = in_height // pool_height
+        out_width = in_width // pool_width
+        pool_out_layer_shape = (out_height, out_width, n_chan_out)
+        pool_weight_matrix = np.zeros((in_layer_size, np.product(pool_out_layer_shape)))
 
-    return conv_weight_matrix
+        for in_int in tqdm(range(in_layer_size)):
+            if fast: break
+
+            for i in range(out_height):
+                for j in range(out_width):
+                    for c_out in range(n_chan_out):
+
+                        pool_int = cnn_layer_tup_to_int((i,j,c_out), pool_out_layer_shape) #gives index into conv_weight_matrix
+                        val = None 
+                        for n in range(pool_height):
+                            for m in range(pool_width):
+
+                                out_int = cnn_layer_tup_to_int((2*i + n,2*j + m,c_out), out_layer_shape) #gives index into conv_weight_matrix
+                                if val == None or val < conv_weight_matrix[in_int][out_int]: 
+                                    val = conv_weight_matrix[in_int][out_int]
+                        pool_weight_matrix[in_int][pool_int] = val 
+
+        return pool_weight_matrix
 
 def cnn_layer_tup_to_int(tup, layer_shape):
     '''
@@ -235,14 +271,17 @@ if __name__ == '__main__':
     model = keras.Sequential(
         [
             keras.Input(shape=input_shape),
-            layers.Conv2D(64, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
-            layers.Conv2D(64, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
-            layers.Conv2D(32, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
-            # layers.MaxPooling2D(pool_size=(2, 2)),
-            layers.Conv2D(32, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
+            # layers.Conv2D(32, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
+            layers.Conv2D(16, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
+            layers.MaxPooling2D(pool_size=(2, 2)),
+            layers.Conv2D(8, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
+            layers.MaxPooling2D(pool_size=(2, 2)),
+            layers.Conv2D(4, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
+            layers.MaxPooling2D(pool_size=(2, 2)),
+            layers.Conv2D(2, kernel_size=kernel_size, dilation_rate=dilation_rate, padding="same", activation="relu"),
             # layers.MaxPooling2D(pool_size=(2, 2)),
             layers.Flatten(),
-            layers.Dense(50, activation="relu"),
+            layers.Dense(20, activation="relu"),
             layers.Dense(2*num_classes, activation=None),
         ]
     )
@@ -265,6 +304,9 @@ if __name__ == '__main__':
 
     # In[ ]:
 
+    epochs = 10
+    if fast: 
+        epochs = 1
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(0.001),
@@ -273,7 +315,7 @@ if __name__ == '__main__':
 
     model.fit(
         train_dataset,
-        epochs=6,
+        epochs=epochs,
         validation_data=test_dataset,
     )
     del train_dataset
@@ -287,19 +329,23 @@ if __name__ == '__main__':
 
     clustering = cluster_net(3, adj)
     print(f'clustering finished!')
+    print(clustering.shape)
+    print(np.unique(clustering))
 
     cluster_count = { l : [] for l in range(len(layer_size))}
 
     j = 0
-    for i, sz in enumerate(layer_size): 
-        print(f'layer {i}, sz={sz}')
-        for l in range(len(layer_size)): 
-            cluster_count[l].append(np.sum(clustering[j:j+sz] == l))
-            
-    # for l in range(len(layer_size)): 
+    for l, sz in enumerate(layer_size): 
+        print(f'layer {l}, sz={sz}')
+        for i in range(3): 
+            cluster_count[l].append(np.sum(clustering[j:j+sz] == i))
+        if l > 1: 
+            print(clustering[j:j+sz])
+        j += sz
 
-    #         print(count)
-    #     j += sz
+
+    print(cluster_count)
+
 
   
 # plot bars in stack manner
